@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>That Cinephile Friend</title>
+    <link rel="icon" type="image/svg+xml" href="/frontend/favicon.svg" />
+    <link rel="stylesheet" href="/frontend/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">RECOMMENDATIONS, BUT PERSONAL</p>
+        <h1>That Cinephile<br /><i>Friend</i></h1>
+        <p class="intro">
+          Tell me what you are in the mood for. I’ll bring the watchlist.
+        </p>
+      </header>
+      <form id="search-form">
+        <div class="mode">
+          <label
+            ><input type="radio" name="mode" value="discover" checked />
+            Discover</label
+          ><label
+            ><input type="radio" name="mode" value="similar" /> Similar to a
+            title</label
+          >
+        </div>
+        <div class="search-row">
+          <input
+            id="query"
+            placeholder="A dark mystery, a cozy anime, a title…"
+            autocomplete="off"
+          /><button>Find my next watch</button>
+        </div>
+        <div class="filters">
+          <fieldset>
+            <legend>TYPE</legend>
+            <label
+              ><input type="radio" name="type" value="" checked /> Any</label
+            ><label
+              ><input type="radio" name="type" value="movie" /> Movies</label
+            ><label
+              ><input type="radio" name="type" value="series" /> Series</label
+            ><label
+              ><input type="radio" name="type" value="anime" /> Anime</label
+            >
+          </fieldset>
+          <label class="niche"
+            ><input id="niche" type="checkbox" /><span
+              >✦ Niche / underrated picks</span
+            ></label
+          >
+        </div>
+      </form>
+      <p id="status" aria-live="polite" class="loading">
+        <span class="spinner" aria-hidden="true"></span>
+        Pick a mood, a genre, or a favourite title.
+      </p>
+      <section id="results" class="grid"></section>
+    </main>
+    <template id="card"
+      ><article class="card">
+        <img />
+        <div class="card-copy">
+          <p class="type"></p>
+          <h2></h2>
+          <p class="rating"></p>
+          <p class="overview"></p>
+          <p class="genres"></p>
+        </div></article
+    ></template>
+    <script src="/frontend/app.js"></script>
+  </body>
+</html>
