@@ -16,8 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
-from sentence_transformers import SentenceTransformer
 
+from .embedder import OnnxEmbedder
 from .schemas import MediaType, ResultsResponse
 from .search import build_filter, result_from_point, search_points
 from .text import embedding_text
@@ -35,21 +35,18 @@ ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# In-memory LRU cache for query embeddings to ensure sub-millisecond responses
+# In-memory LRU cache for query embeddings
 _EMBEDDING_CACHE: dict[str, list[float]] = {}
 MAX_CACHE_SIZE = 2500
 
 
-async def get_embedding(text: str, model: SentenceTransformer) -> list[float]:
+async def get_embedding(text: str, embedder: OnnxEmbedder) -> list[float]:
     """Encode text to normalized vector asynchronously on a worker thread with LRU caching."""
     clean_text = text.strip()
     if clean_text in _EMBEDDING_CACHE:
         return _EMBEDDING_CACHE[clean_text]
 
-    def _encode():
-        return model.encode(clean_text, normalize_embeddings=True, show_progress_bar=False).tolist()
-
-    vector = await asyncio.to_thread(_encode)
+    vector = await asyncio.to_thread(embedder.encode, clean_text)
     if len(_EMBEDDING_CACHE) >= MAX_CACHE_SIZE:
         _EMBEDDING_CACHE.pop(next(iter(_EMBEDDING_CACHE)))
     _EMBEDDING_CACHE[clean_text] = vector
@@ -58,17 +55,8 @@ async def get_embedding(text: str, model: SentenceTransformer) -> list[float]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing high-performance ONNX model: %s", MODEL_NAME)
-    try:
-        app.state.model = SentenceTransformer(
-            MODEL_NAME,
-            backend="onnx",
-            model_kwargs={"file_name": "onnx/model_O4.onnx"},
-        )
-        logger.info("ONNX O4 optimized inference engine loaded successfully.")
-    except Exception as exc:
-        logger.warning("ONNX initialization notice (%s); loading standard SentenceTransformer.", exc)
-        app.state.model = SentenceTransformer(MODEL_NAME)
+    logger.info("Initializing ultra-lightweight ONNX embedder for %s...", MODEL_NAME)
+    app.state.embedder = OnnxEmbedder(MODEL_NAME)
 
     url, key = os.getenv("QDRANT_URL"), os.getenv("QDRANT_API_KEY")
     if url:
@@ -78,7 +66,7 @@ async def lifespan(app: FastAPI):
         logger.warning("QDRANT_URL is not set; running in degraded mode.")
         app.state.client = None
     app.state.collection = os.getenv("QDRANT_COLLECTION", "titles")
-    logger.info("Application ready to serve requests.")
+    logger.info("That Cinephile Friend is online and ready for requests.")
     yield
     logger.info("Shutting down application.")
 
@@ -157,19 +145,18 @@ app.mount("/frontend", StaticFiles(directory=FRONTEND), name="frontend")
 def dependencies():
     if app.state.client is None:
         raise HTTPException(503, "Qdrant is not configured. Set QDRANT_URL and QDRANT_API_KEY.")
-    return app.state.client, app.state.model, app.state.collection
+    return app.state.client, app.state.embedder, app.state.collection
 
 
-async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[float]:
+async def tmdb_fallback_vector(title: str, embedder: OnnxEmbedder) -> list[float]:
     """Search TMDB for movies/TV/anime or fallback to semantic text encoding."""
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
         logger.info("No TMDB_API_KEY set; embedding query text directly: '%s'", title)
-        return await get_embedding(title, model)
+        return await get_embedding(title, embedder)
 
     try:
         async with httpx.AsyncClient(timeout=6) as http:
-            # Use multi-search to find movies, TV shows, and anime in a single fast call
             search = await http.get(
                 "https://api.themoviedb.org/3/search/multi",
                 params={"api_key": api_key, "query": title, "include_adult": "false"},
@@ -180,7 +167,6 @@ async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[f
                     if item.get("media_type") in ("movie", "tv") and item.get("overview")
                 ]
                 if results:
-                    # Match exact title if possible, else use first popular item
                     selected = next(
                         (
                             m for m in results
@@ -193,13 +179,13 @@ async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[f
                     genre_names = [str(g) for g in selected.get("genre_ids", [])]
                     text = embedding_text(item_title, overview, genre_names)
                     logger.info("TMDB match found for '%s': '%s' -> embedding overview", title, item_title)
-                    return await get_embedding(text, model)
+                    return await get_embedding(text, embedder)
     except Exception as exc:
         logger.warning("TMDB lookup exception for '%s': %s. Falling back to direct query embedding.", title, exc)
 
     # Fallback to direct semantic concept embedding
     logger.info("No exact TMDB entry for '%s'; embedding as semantic concept.", title)
-    return await get_embedding(title, model)
+    return await get_embedding(title, embedder)
 
 
 @app.get("/", include_in_schema=False)
@@ -224,10 +210,9 @@ async def similar(
     media_type: MediaType | None = None,
     limit: int = Query(default=10, ge=1, le=50),
 ):
-    client, model, collection = dependencies()
+    client, embedder, collection = dependencies()
     clean_title = title.strip()
 
-    # Fast scroll lookup for exact title match
     title_filter = Filter(must=[FieldCondition(key="title", match=MatchValue(value=clean_title))])
     matches, _ = client.scroll(collection_name=collection, scroll_filter=title_filter, limit=1, with_vectors=True)
     source_id = None
@@ -237,8 +222,7 @@ async def similar(
         if isinstance(vector, dict):
             vector = next(iter(vector.values()))
     else:
-        # Fallback to TMDB multi-search or concept embedding
-        vector = await tmdb_fallback_vector(clean_title, model)
+        vector = await tmdb_fallback_vector(clean_title, embedder)
 
     points = search_points(client, collection, vector, build_filter(media_type), limit + 1)
     results = [result_from_point(p) for p in points if str(p.id) != source_id][:limit]
@@ -252,10 +236,10 @@ async def discover(
     niche: bool = False,
     limit: int = Query(default=10, ge=1, le=50),
 ):
-    client, model, collection = dependencies()
+    client, embedder, collection = dependencies()
     query_filter = build_filter(media_type, niche)
     if query and query.strip():
-        vector = await get_embedding(query.strip(), model)
+        vector = await get_embedding(query.strip(), embedder)
         points = search_points(client, collection, vector, query_filter, limit)
     else:
         points, _ = client.scroll(collection_name=collection, scroll_filter=query_filter, limit=limit, with_payload=True)

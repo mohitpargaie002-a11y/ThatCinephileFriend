@@ -15,8 +15,8 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser && 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download both PyTorch and ONNX O4 optimized models at build time for instant zero-cold-start startup
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', backend='onnx', model_kwargs={'file_name': 'onnx/model_O4.onnx'})"
+# Pre-download tokenizer and ONNX model at build time
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json'); hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model_O4.onnx')"
 
 COPY app ./app
 COPY frontend ./frontend
