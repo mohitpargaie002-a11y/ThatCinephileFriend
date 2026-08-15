@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import functools
+import asyncio
 import logging
 import os
 import time
@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +22,7 @@ from .schemas import MediaType, ResultsResponse
 from .search import build_filter, result_from_point, search_points
 from .text import embedding_text
 
-# Configure logging
+# Configure structured logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -31,25 +30,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cinephile")
 
-# Optimize PyTorch CPU threading for constrained container environments (Render free tier)
-torch.set_num_threads(2)
-
 load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# In-memory LRU cache for query embeddings to ensure sub-millisecond responses for repeated queries
+# In-memory LRU cache for query embeddings to ensure sub-millisecond responses
 _EMBEDDING_CACHE: dict[str, list[float]] = {}
-MAX_CACHE_SIZE = 2000
+MAX_CACHE_SIZE = 2500
 
 
-def get_cached_embedding(text: str, model: SentenceTransformer) -> list[float]:
+async def get_embedding(text: str, model: SentenceTransformer) -> list[float]:
+    """Encode text to normalized vector asynchronously on a worker thread with LRU caching."""
     clean_text = text.strip()
     if clean_text in _EMBEDDING_CACHE:
         return _EMBEDDING_CACHE[clean_text]
-    with torch.inference_mode():
-        vector = model.encode(clean_text, normalize_embeddings=True, show_progress_bar=False).tolist()
+
+    def _encode():
+        return model.encode(clean_text, normalize_embeddings=True, show_progress_bar=False).tolist()
+
+    vector = await asyncio.to_thread(_encode)
     if len(_EMBEDDING_CACHE) >= MAX_CACHE_SIZE:
         _EMBEDDING_CACHE.pop(next(iter(_EMBEDDING_CACHE)))
     _EMBEDDING_CACHE[clean_text] = vector
@@ -58,8 +58,18 @@ def get_cached_embedding(text: str, model: SentenceTransformer) -> list[float]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing SentenceTransformer model: %s", MODEL_NAME)
-    app.state.model = SentenceTransformer(MODEL_NAME)
+    logger.info("Initializing high-performance ONNX model: %s", MODEL_NAME)
+    try:
+        app.state.model = SentenceTransformer(
+            MODEL_NAME,
+            backend="onnx",
+            model_kwargs={"file_name": "onnx/model_O4.onnx"},
+        )
+        logger.info("ONNX O4 optimized inference engine loaded successfully.")
+    except Exception as exc:
+        logger.warning("ONNX initialization notice (%s); loading standard SentenceTransformer.", exc)
+        app.state.model = SentenceTransformer(MODEL_NAME)
+
     url, key = os.getenv("QDRANT_URL"), os.getenv("QDRANT_API_KEY")
     if url:
         logger.info("Connecting to Qdrant cluster: %s", url)
@@ -68,7 +78,7 @@ async def lifespan(app: FastAPI):
         logger.warning("QDRANT_URL is not set; running in degraded mode.")
         app.state.client = None
     app.state.collection = os.getenv("QDRANT_COLLECTION", "titles")
-    logger.info("Application startup complete. Ready for requests.")
+    logger.info("Application ready to serve requests.")
     yield
     logger.info("Shutting down application.")
 
@@ -113,12 +123,11 @@ async def log_and_secure_requests(request: Request, call_next):
     duration_ms = (time.perf_counter() - start_time) * 1000
     if request.url.path not in ("/health", "/favicon.ico") or response.status_code >= 400:
         logger.info(
-            "%s %s%s [%d %s] in %.1fms",
+            "%s %s%s [%d] in %.1fms",
             request.method,
             request.url.path,
             f"?{request.url.query}" if request.url.query else "",
             response.status_code,
-            response.body_iterator if hasattr(response, "body_iterator") else "",
             duration_ms,
         )
 
@@ -156,10 +165,10 @@ async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[f
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
         logger.info("No TMDB_API_KEY set; embedding query text directly: '%s'", title)
-        return get_cached_embedding(title, model)
+        return await get_embedding(title, model)
 
     try:
-        async with httpx.AsyncClient(timeout=8) as http:
+        async with httpx.AsyncClient(timeout=6) as http:
             # Use multi-search to find movies, TV shows, and anime in a single fast call
             search = await http.get(
                 "https://api.themoviedb.org/3/search/multi",
@@ -171,7 +180,7 @@ async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[f
                     if item.get("media_type") in ("movie", "tv") and item.get("overview")
                 ]
                 if results:
-                    # Pick exact title match if available, otherwise the most popular result
+                    # Match exact title if possible, else use first popular item
                     selected = next(
                         (
                             m for m in results
@@ -184,13 +193,13 @@ async def tmdb_fallback_vector(title: str, model: SentenceTransformer) -> list[f
                     genre_names = [str(g) for g in selected.get("genre_ids", [])]
                     text = embedding_text(item_title, overview, genre_names)
                     logger.info("TMDB match found for '%s': '%s' -> embedding overview", title, item_title)
-                    return get_cached_embedding(text, model)
+                    return await get_embedding(text, model)
     except Exception as exc:
-        logger.warning("TMDB lookup failed for '%s': %s. Falling back to direct query embedding.", title, exc)
+        logger.warning("TMDB lookup exception for '%s': %s. Falling back to direct query embedding.", title, exc)
 
-    # If title is a concept/phrase (e.g. "Time Travel") or TMDB has no match, embed directly
+    # Fallback to direct semantic concept embedding
     logger.info("No exact TMDB entry for '%s'; embedding as semantic concept.", title)
-    return get_cached_embedding(title, model)
+    return await get_embedding(title, model)
 
 
 @app.get("/", include_in_schema=False)
@@ -246,7 +255,7 @@ async def discover(
     client, model, collection = dependencies()
     query_filter = build_filter(media_type, niche)
     if query and query.strip():
-        vector = get_cached_embedding(query.strip(), model)
+        vector = await get_embedding(query.strip(), model)
         points = search_points(client, collection, vector, query_filter, limit)
     else:
         points, _ = client.scroll(collection_name=collection, scroll_filter=query_filter, limit=limit, with_payload=True)

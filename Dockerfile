@@ -3,7 +3,8 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=10000 \
-    HF_HOME=/opt/huggingface
+    HF_HOME=/opt/huggingface \
+    HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
 WORKDIR /code
 
@@ -14,13 +15,12 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser && 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the model at image build time to ensure zero cold-start delay
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# Pre-download both PyTorch and ONNX O4 optimized models at build time for instant zero-cold-start startup
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', backend='onnx', model_kwargs={'file_name': 'onnx/model_O4.onnx'})"
 
 COPY app ./app
 COPY frontend ./frontend
 
-# Change ownership and switch to non-root user
 RUN chown -R appuser:appuser /code /opt/huggingface
 USER appuser
 
