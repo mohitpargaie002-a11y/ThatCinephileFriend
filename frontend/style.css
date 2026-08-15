@@ -76,6 +76,37 @@ form {
   padding: 0 22px;
   font: inherit;
   cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+.search-row button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.suggestions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 0.72rem;
+}
+.suggestion-label {
+  color: var(--muted);
+}
+.chip {
+  background: #ede3d4;
+  border: 1px solid #dfd0be;
+  color: var(--ink);
+  padding: 4px 10px;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chip:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
 }
 .filters {
   display: flex;
@@ -97,6 +128,7 @@ legend {
 }
 .filters label {
   font-size: 0.75rem;
+  cursor: pointer;
 }
 .niche {
   border: 1px solid var(--accent);
@@ -130,6 +162,11 @@ button:disabled, input:disabled { cursor: wait; opacity: 0.55; }
   background: #fffaf3;
   box-shadow: 5px 6px 0 #dfd0be;
   overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 5px 8px 0 #cfbfab;
 }
 .card img {
   width: 100%;

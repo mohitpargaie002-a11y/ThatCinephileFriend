@@ -31,7 +31,17 @@
             id="query"
             placeholder="A dark mystery, a cozy anime, a title…"
             autocomplete="off"
-          /><button>Find my next watch</button>
+            maxlength="300"
+          /><button id="submit-btn" type="submit">Find my next watch</button>
+        </div>
+        <div class="suggestions" id="suggestions">
+          <span class="suggestion-label">Try:</span>
+          <button type="button" class="chip" data-mode="discover" data-query="Time Travel">Time Travel</button>
+          <button type="button" class="chip" data-mode="discover" data-query="Cyberpunk detective mystery">Cyberpunk</button>
+          <button type="button" class="chip" data-mode="discover" data-query="Cozy Studio Ghibli vibes">Cozy Vibes</button>
+          <button type="button" class="chip" data-mode="discover" data-query="Dark psychological thriller">Psychological</button>
+          <button type="button" class="chip" data-mode="similar" data-query="Inception">Inception</button>
+          <button type="button" class="chip" data-mode="similar" data-query="Dark">Dark</button>
         </div>
         <div class="filters">
           <fieldset>
@@ -61,7 +71,7 @@
     </main>
     <template id="card"
       ><article class="card">
-        <img />
+        <img loading="lazy" />
         <div class="card-copy">
           <p class="type"></p>
           <h2></h2>
